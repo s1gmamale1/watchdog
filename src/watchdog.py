@@ -159,21 +159,27 @@ def capture_logbox_client(hwnd: int, log_region: dict) -> np.ndarray:
     return cv2.cvtColor(np.array(shot), cv2.COLOR_RGB2BGR)
 
 
-def scroll_logbox_to_bottom(hwnd: int, regions: dict, verbose: bool = False) -> bool:
+def scroll_logbox_to_top(hwnd: int, regions: dict, verbose: bool = True) -> bool:
     """
-    NEW: Scroll logbox to bottom before reading to ensure latest message.
+    FIXED: Scroll logbox to TOP (where latest messages appear in FSM Panel).
     
-    Double-clicks the scroll bar to jump to bottom.
+    FSM Panel shows messages in REVERSE order:
+    - TOP = Latest messages (newest)
+    - BOTTOM = Old messages (oldest)
+    
+    This is opposite of normal logs!
+    
+    Double-clicks the scroll bar near TOP to jump there.
     
     Config in regions.yaml:
         log_scroll_point_pct:
-            x: 0.95    # Right side of window (scroll bar)
-            y: 0.95    # Bottom of scroll area
+            x: 0.95    # Right side (scroll bar location)
+            y: 0.08    # TOP area (where latest messages are!)
     
     Args:
         hwnd: Window handle
         regions: Config dict with log_scroll_point_pct
-        verbose: Print debug info
+        verbose: Print debug info (default True for visibility)
     
     Returns:
         True if scroll attempted, False if not configured
@@ -181,7 +187,8 @@ def scroll_logbox_to_bottom(hwnd: int, regions: dict, verbose: bool = False) -> 
     scroll_cfg = regions.get("log_scroll_point_pct")
     
     if not scroll_cfg:
-        # Not configured - skip silently
+        if verbose:
+            print("⏭️  Auto-scroll disabled (log_scroll_point_pct not configured)")
         return False
     
     try:
@@ -193,31 +200,37 @@ def scroll_logbox_to_bottom(hwnd: int, regions: dict, verbose: bool = False) -> 
         
         # Calculate scroll position
         x_pct = float(scroll_cfg.get("x", 0.95))
-        y_pct = float(scroll_cfg.get("y", 0.95))
+        y_pct = float(scroll_cfg.get("y", 0.08))  # TOP for FSM Panel!
         
         x = cx + int(cw * x_pct)
         y = cy + int(ch * y_pct)
         
-        if verbose:
-            print(f"📜 Scrolling to bottom: ({x}, {y})")
+        print(f"📜 Scrolling to TOP (where latest messages are)...")
+        print(f"   Position: ({x_pct:.2f}, {y_pct:.2f}) → screen ({x}, {y})")
         
         # Focus window first
         win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
         win32gui.SetForegroundWindow(hwnd)
-        time.sleep(0.2)
+        time.sleep(0.3)
         
-        # Double-click scroll bar to jump to bottom
-        pyautogui.moveTo(x, y, duration=0.1)
+        # VISUAL: Move mouse slowly so you can see it
+        print(f"   🖱️  Moving mouse to scroll bar...")
+        pyautogui.moveTo(x, y, duration=0.5)  # Slow move (0.5s) for visibility
+        time.sleep(0.2)  # Pause so you can see where it is
+        
+        # Double-click scroll bar to jump to TOP
+        print(f"   🖱️  Double-clicking scroll bar...")
         pyautogui.doubleClick()
         
         # Wait for scroll animation
-        time.sleep(0.3)
+        print(f"   ⏳ Waiting for scroll animation...")
+        time.sleep(0.5)  # Longer wait to see scroll happen
         
+        print(f"   ✅ Scroll complete!")
         return True
         
     except Exception as e:
-        if verbose:
-            print(f"⚠️  Scroll failed: {e}")
+        print(f"   ❌ Scroll failed: {e}")
         return False
 
 def run_panel_first_run_if_needed(hwnd: int, regions: dict, log=None, force: bool = False) -> bool:
@@ -885,7 +898,7 @@ def run_watchdog() -> None:
                     raise RuntimeError("Missing log_region in config.")
 
             # NEW: Scroll to bottom before capturing (if configured)
-            scroll_logbox_to_bottom(hwnd, regions, verbose=False)
+            scroll_logbox_to_top(hwnd, regions, verbose=True)  # Always show output
 
             img = capture_logbox_client(hwnd, log_region)
             
