@@ -8,9 +8,12 @@ button_point_pct:
   x: 0.5839483394833949
   y: 0.47771836007130125
 
+# log_scroll_point_pct:
+#   x: 0.4317    # Right side (scroll bar is usually at 90-98%)
+#   y: 0.0499   # Bottom of scroll area (usually 90-98%)
 log_scroll_point_pct:
-  x: 0.4317    # Right side (scroll bar is usually at 90-98%)
-  y: 0.0499   # Bottom of scroll area (usually 90-98%)
+  x: 0.95    # RIGHT side (scroll bar location) ✅
+  y: 0.92    # BOTTOM of scroll area (not top!) ✅
   
 # Legacy absolute pixel regions (kept for reference)
 # log_region:

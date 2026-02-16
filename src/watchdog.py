@@ -463,7 +463,7 @@ def launch_steam_route_if_configured(regions, log=None):
         print(f"❌ Failed to launch Steam Route: {e}")
 
 
-def find_latest_entry(text: str) -> Tuple[Optional[float], Optional[int], Optional[int], Optional[str], Optional[str]]:
+def find_latest_entry(text: str, debug=False) -> Tuple[Optional[float], Optional[int], Optional[int], Optional[str], Optional[str]]:
     if not text:
         return None, None, None, None, None
 
@@ -475,6 +475,8 @@ def find_latest_entry(text: str) -> Tuple[Optional[float], Optional[int], Option
     best_mm = None
     best_line = None
     best_msg = None
+    
+    all_matches = []  # Track all matches for debugging
 
     for m in ENTRY_RE.finditer(text):
         hh = int(m.group("hh"))
@@ -486,6 +488,16 @@ def find_latest_entry(text: str) -> Tuple[Optional[float], Optional[int], Option
             continue
 
         mins = minutes_since_hhmm(hh, mm)
+        
+        # Debug: Track all matches
+        if debug:
+            all_matches.append((hh, mm, mins, msg[:50]))
+
+        # VALIDATION: Skip timestamps that are too old (> 2 hours = 120 min)
+        if mins > 120:
+            if debug:
+                print(f"   ⚠️  Skipping old timestamp: {hh:02d}:{mm:02d} ({mins:.1f} min ago)")
+            continue
 
         if best_minutes is None or mins < best_minutes:
             best_minutes = mins
@@ -494,6 +506,13 @@ def find_latest_entry(text: str) -> Tuple[Optional[float], Optional[int], Option
             compact_msg = re.sub(r"\s+", " ", msg).strip()
             best_line = f"{hh:02d}:{mm:02d} | {compact_msg}"
             best_msg = msg
+    
+    # Debug output
+    if debug and all_matches:
+        print(f"   📋 Found {len(all_matches)} timestamp(s):")
+        for hh, mm, mins, msg in all_matches[:5]:  # Show first 5
+            marker = "⭐" if (best_hh == hh and best_mm == mm) else "  "
+            print(f"   {marker} {hh:02d}:{mm:02d} ({mins:.1f} min ago) - {msg}")
 
     return best_minutes, best_hh, best_mm, best_line, best_msg
 
@@ -869,10 +888,15 @@ def run_watchdog() -> None:
             scroll_logbox_to_bottom(hwnd, regions, verbose=False)
 
             img = capture_logbox_client(hwnd, log_region)
-            if save_last_log_image:
-                logs_dir = os.path.join(BASE, "logs")
-                os.makedirs(logs_dir, exist_ok=True)
-                cv2.imwrite(os.path.join(logs_dir, "last_log.png"), img)
+            
+            # ALWAYS save images (create logs dir if missing)
+            logs_dir = os.path.join(BASE, "logs")
+            os.makedirs(logs_dir, exist_ok=True)
+            
+            # Save main screenshot
+            cv2.imwrite(os.path.join(logs_dir, "last_log.png"), img)
+            if debug_print_ocr:
+                print(f"💾 Saved: {os.path.join(logs_dir, 'last_log.png')}")
 
             text = (ocr_log_text(img) or "").strip()
 
@@ -887,7 +911,7 @@ def run_watchdog() -> None:
 
                 # Logic Analysis
         # Logic Analysis (1st pass)
-        minutes_ago, hh, mm, latest_line, latest_msg = find_latest_entry(text)
+        minutes_ago, hh, mm, latest_line, latest_msg = find_latest_entry(text, debug=True)  # Always debug
         
         if minutes_ago is None:
             # Retry once using screen-capture fallback (still inside the same loop)
@@ -908,17 +932,19 @@ def run_watchdog() -> None:
                 shot = pyautogui.screenshot(region=(left, top, w, h))
                 img2 = cv2.cvtColor(np.array(shot), cv2.COLOR_RGB2BGR)
         
-                if save_last_log_image:
-                    logs_dir = os.path.join(BASE, "logs")
-                    os.makedirs(logs_dir, exist_ok=True)
-                    cv2.imwrite(os.path.join(logs_dir, "last_log_fallback.png"), img2)
+                # ALWAYS save fallback image
+                logs_dir = os.path.join(BASE, "logs")
+                os.makedirs(logs_dir, exist_ok=True)
+                cv2.imwrite(os.path.join(logs_dir, "last_log_fallback.png"), img2)
+                if debug_print_ocr:
+                    print(f"💾 Saved: {os.path.join(logs_dir, 'last_log_fallback.png')}")
         
                 text2 = _norm((ocr_log_text(img2) or "").strip())
         
                 if debug_print_ocr:
                     print(f"📄 OCR(fallback): {text2[:100]}...")
         
-                minutes_ago, hh, mm, latest_line, latest_msg = find_latest_entry(text2)
+                minutes_ago, hh, mm, latest_line, latest_msg = find_latest_entry(text2, debug=True)  # Always debug
         
             except Exception as e:
                 log.warning("Fallback capture/OCR failed: %s", e)
