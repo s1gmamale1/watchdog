@@ -1,0 +1,19 @@
+paths:
+  expressvpn_exe:
+    - "C:/Program Files (x86)/ExpressVPN/expressvpn-ui/ExpressVPN.exe"
+
+  memreduct_exe:
+    - "C:/Program Files/Mem Reduct/MemReduct.exe"
+
+  rdpclient_exe:
+    - "C:/Users/Recruiter/Downloads/RDPClient/RDPClient.exe"
+
+rdp:
+  user1_point_pct:
+    x: 0.1902
+    y: 0.2754
+  user2_point_pct:
+    x: 0.2366
+    y: 0.3300
+  ui_wait_s: 5.0
+  dialog_wait_s: 1.0    

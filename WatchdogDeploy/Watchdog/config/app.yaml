@@ -1,0 +1,58 @@
+window:
+  title_substring: "524AAD7FA11896EC"   # change to your real window title substring
+  prefer_process: false          # later we can switch to process-based match
+  process_name: ""               # e.g. "MyApp.exe"
+
+layout:
+  width: 1100
+  height: 600
+  margin_right: 0
+  margin_bottom: 0
+
+watchdog:
+  # === DUAL RECOVERY TRIGGERS ===
+  
+  # Trigger 1: Message contains "warm" keyword
+  # If latest message contains "warm" AND is older than this, click recovery
+  warm_timeout_minutes: 40
+  
+  # Trigger 2: Any message timeout (safety net)
+  # If ANY message is older than this (regardless of content), click recovery
+  # This catches cases where the original logic might miss failures
+  general_timeout_minutes: 60
+  
+  # === CORE SETTINGS ===
+  
+  # How often to check the log (in seconds)
+  poll_seconds: 30       
+  
+  # Cooldown: Prevent repeated clicks within this time (in seconds)
+  # Prevents multiple recovery attempts if the first one is still processing
+  action_debounce_seconds: 180
+  
+  # === WINDOW MANAGEMENT ===
+  
+  # Reposition window every loop (ensures consistent capture)
+  normalize_every_loop: true
+  
+  # Wait time after repositioning window (milliseconds)
+  settle_after_normalize_ms: 150
+  
+  # Wait time after bringing window to foreground (milliseconds)
+  settle_after_focus_ms: 200
+  
+  # Wait time after clicking recovery button (milliseconds)
+  settle_after_click_ms: 2000
+  
+  # === DEBUG OPTIONS ===
+  
+  # Print full OCR text to logs
+  debug_print_ocr: true
+  
+  # Save last captured log image to logs/last_log.png
+  save_last_log_image: true
+  
+  # Save screenshot with click location marker
+  debug_images: false
+
+
