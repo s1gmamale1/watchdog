@@ -1,6 +1,7 @@
-venv/
-build/
-logs/
 dist/
+build/
 *.zip
 *.spec
+venv/
+__pycache__/
+logs/
