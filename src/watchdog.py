@@ -15,8 +15,6 @@ import cv2
 import subprocess
 import psutil
 import win32console
-import csv
-import io
 import win32process
 import win32ui
 from ctypes import windll
@@ -25,6 +23,7 @@ from ocr import ocr_log_text
 from utils import load_yaml, setup_logger
 from window_connector import find_hwnd_by_title_substring
 from layout import normalize_window_bottom_right
+from winops import _query_full_process_image_name
 from pathlib import Path
 
 
@@ -381,26 +380,17 @@ def run_panel_first_run_if_needed(hwnd: int, regions: dict, log=None, force: boo
     return True  # Success!
 
 def is_process_running(image_name: str) -> bool:
-    """Windows-only: returns True if a process with this exact image name is running."""
+    """Returns True if a process with this exact image name is running."""
     if not image_name:
         return False
-    try:
-        out = subprocess.check_output(
-            ["tasklist", "/FO", "CSV", "/NH", "/FI", f"IMAGENAME eq {image_name}"],
-            text=True,
-            errors="ignore"
-        )
-        # If no tasks match, tasklist outputs: INFO: No tasks are running...
-        if "No tasks are running" in out:
-            return False
-        # Parse CSV rows; first column is image name
-        reader = csv.reader(io.StringIO(out))
-        for row in reader:
-            if row and row[0].strip('"').lower() == image_name.lower():
+    name_lower = image_name.lower()
+    for proc in psutil.process_iter(['name']):
+        try:
+            if proc.info['name'] and proc.info['name'].lower() == name_lower:
                 return True
-        return False
-    except Exception:
-        return False
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    return False
 
 def is_panel_running(panel_dir: str) -> bool:
     """
@@ -635,22 +625,6 @@ def resolve_panel_exe(regions: dict) -> Optional[str]:
     return newest_exe
 
 
-def _query_full_process_image_name(pid: int) -> str:
-    """Return full exe path for a PID, or empty string."""
-    import ctypes
-    try:
-        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
-        if not handle:
-            return ""
-        buf = ctypes.create_unicode_buffer(2048)
-        size = ctypes.c_ulong(len(buf))
-        ok = ctypes.windll.kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size))
-        ctypes.windll.kernel32.CloseHandle(handle)
-        return buf.value if ok else ""
-    except Exception:
-        return ""
-
-
 def find_window_by_process_path(dir_substring: str) -> Tuple[Optional[int], Optional[str]]:
     """
     FALLBACK: Find window by process directory.
@@ -846,13 +820,13 @@ def run_watchdog() -> None:
     # Initialize normalize flag based on config
     normalize_every = bool(app["watchdog"].get("normalize_every_loop", True))
 
-    os.makedirs("logs", exist_ok=True)
+    os.makedirs(os.path.join(BASE, "logs"), exist_ok=True)
     hwnd = None
     last_found_title = None
     last_action_ts = 0.0
     last_logged_latest_line = None
     steam_route_launched = False
-    first_run_completed_pids = set()  # Track PIDs we've already run first-run on
+    first_run_completed_pids = []  # Ordered list so we keep the most recent on cleanup
     cs2_check_timestamp = None
     cs2_check_done = False
 
@@ -879,8 +853,20 @@ def run_watchdog() -> None:
             hwnd, last_found_title = find_hwnd_by_title_substring(title_sub)
             
             if not hwnd:
-                print(f"⚠️  Window not found (looking for: '{title_sub}'). Launching panel.exe...")
-                log.warning("Window not found. Launching panel.exe")
+                print(f"⚠️  Window not found (looking for: '{title_sub}').")
+                log.warning("Window not found.")
+
+                # Guard: if panel process is already running but window is just hidden/loading,
+                # don't spawn a second instance — wait and search again.
+                panel_dir_check = regions.get("panel", {}).get("dir", "")
+                if panel_dir_check and is_panel_running(panel_dir_check):
+                    print("⚠️  Panel process is already running but window not found. Waiting...")
+                    log.warning("Panel already running (no window). Waiting 5s before retry.")
+                    time.sleep(5)
+                    continue
+
+                print("Launching panel.exe...")
+                log.warning("Launching panel.exe")
 
                 try:
                     regions = load_yaml(REGIONS_CFG_PATH)
@@ -985,7 +971,7 @@ def run_watchdog() -> None:
                             success = run_panel_first_run_if_needed(hwnd, regions, log=log, force=True)
                             
                             if success:
-                                first_run_completed_pids.add(pid)
+                                first_run_completed_pids.append(pid)
                                 
                                 # Set CS2 check for 5 min from now
                                 if cs2_check_timestamp is None:
@@ -1068,8 +1054,8 @@ def run_watchdog() -> None:
                 if not log_region:
                     raise RuntimeError("Missing log_region in config.")
 
-            # NEW: Scroll to bottom before capturing (if configured)
-            scroll_logbox_to_top(hwnd, regions, verbose=True)  # Always show output
+            # Scroll to top before capturing (if log_scroll_point_pct is configured)
+            scroll_logbox_to_top(hwnd, regions, verbose=False)
 
             img = capture_logbox_client(hwnd, log_region)
             
@@ -1093,10 +1079,9 @@ def run_watchdog() -> None:
             time.sleep(poll)
             continue
 
-                # Logic Analysis
         # Logic Analysis (1st pass)
-        minutes_ago, hh, mm, latest_line, latest_msg = find_latest_entry(text, debug=True)  # Always debug
-        
+        minutes_ago, hh, mm, latest_line, latest_msg = find_latest_entry(text, debug=True)
+
 
         # Check for "Cannot add" error (restart explorer)
         if latest_msg and "cannot add" in latest_msg.lower():
@@ -1107,12 +1092,8 @@ def run_watchdog() -> None:
             # Retry once using screen-capture fallback (still inside the same loop)
             try:
                 print("⚠️  Parse failed. Retrying with screen-capture fallback...")
-        
-                # normalize common OCR pipe variants BEFORE parsing
-                def _norm(s: str) -> str:
-                    return (s or "").replace("｜", "|").replace("¦", "|").replace("丨", "|")
-        
-                # screen capture of the same client region
+
+                # Screen capture of the same client region
                 cx, cy = client_origin_screen(hwnd)
                 left = cx + int(log_region["x"])
                 top  = cy + int(log_region["y"])
@@ -1129,7 +1110,8 @@ def run_watchdog() -> None:
                 if debug_print_ocr:
                     print(f"💾 Saved: {os.path.join(logs_dir, 'last_log_fallback.png')}")
         
-                text2 = _norm((ocr_log_text(img2) or "").strip())
+                # normalize_text_for_parsing handles all pipe variants + colon/I/l fixes
+                text2 = normalize_text_for_parsing((ocr_log_text(img2) or "").strip())
         
                 if debug_print_ocr:
                     print(f"📄 OCR(fallback): {text2[:100]}...")
@@ -1175,12 +1157,6 @@ def run_watchdog() -> None:
                 f"{logic_type} timeout exceeded "
                 f"({minutes_ago:.1f} >= {effective_threshold} min). Msg: '{latest_msg}'"
             )
-        if not should_trigger and minutes_ago >= general_timeout:
-             should_trigger = True
-             trigger_reason = (
-                 f"Safety Net (General) timeout exceeded "
-                 f"({minutes_ago:.1f} >= {general_timeout} min)."
-             )
 
         if should_trigger:
             if since_last < debounce:
@@ -1206,12 +1182,9 @@ def run_watchdog() -> None:
                 log.warning("SteamRoute crashed, relaunching")
                 launch_steam_route_if_configured(regions, log=log)
         
-        # PRODUCTION: Cleanup PID tracking to prevent memory growth
+        # Cleanup PID tracking to prevent memory growth (keep 10 most recent)
         if len(first_run_completed_pids) > 20:
-            print("🧹 Cleaning up old PID tracking...")
-            # Keep only recent PIDs (last 10)
-            if len(first_run_completed_pids) > 10:
-                first_run_completed_pids = set(list(first_run_completed_pids)[-10:])
+            first_run_completed_pids = first_run_completed_pids[-10:]
         
 
         # Check CS2 count (5 min after first-run)
