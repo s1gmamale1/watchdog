@@ -405,18 +405,25 @@ def is_panel_running(panel_dir: str) -> bool:
         if not d.exists():
             return False
         
-        # Get all .exe filenames in the directory
+        # Check Panel.exe specifically first — avoids false positives from
+        # unrelated exes (installers, updaters) that share the same directory.
+        panel_exe_path = d / "Panel.exe"
+        if panel_exe_path.exists():
+            if is_process_running("Panel.exe"):
+                print(f"   ✅ Panel process already running: Panel.exe")
+                return True
+            return False
+
+        # Panel.exe not present — fall back to checking any exe in the directory
         exes = [exe.name for exe in d.glob("*.exe")]
-        
         if not exes:
             return False
-        
-        # Check if any of them are running
+
         for exe_name in exes:
             if is_process_running(exe_name):
                 print(f"   ✅ Panel process already running: {exe_name}")
                 return True
-        
+
         return False
         
     except Exception as e:
@@ -557,7 +564,7 @@ def trigger_recovery_action(hwnd: int, log, app, reason: str):
         y = cy + int(b["y"])
     else:
         log.error("No button_point or button_point_pct in config. Cannot click.")
-        return
+        return False
 
     # Click
     print(f"   Clicking ({x}, {y})")
@@ -567,6 +574,7 @@ def trigger_recovery_action(hwnd: int, log, app, reason: str):
     time.sleep(settle_click_ms / 1000)
     print("✅ Recovery complete\n")
     log.info("Recovery click executed at (%d, %d)", x, y)
+    return True
 
 
 def resolve_panel_exe(regions: dict) -> Optional[str]:
@@ -652,7 +660,11 @@ def find_window_by_process_path(dir_substring: str) -> Tuple[Optional[int], Opti
             pass
     
     win32gui.EnumWindows(enum_handler, None)
-    return matches[0] if matches else (None, None)
+    if not matches:
+        return (None, None)
+    if len(matches) > 1:
+        print(f"   ⚠️  find_window_by_process_path: {len(matches)} windows match '{dir_substring}'; using first: '{matches[0][1]}'")
+    return matches[0]
 
 
 
@@ -815,7 +827,7 @@ def run_watchdog() -> None:
     os.makedirs(os.path.join(BASE, "logs"), exist_ok=True)
     hwnd = None
     last_found_title = None
-    last_action_ts = 0.0
+    last_action_ts = time.time()  # Prevents immediate trigger on startup
     last_logged_latest_line = None
     steam_route_launched = False
     first_run_completed_pids = []  # Ordered list so we keep the most recent on cleanup
@@ -835,6 +847,9 @@ def run_watchdog() -> None:
     # OPTIMIZATION: Load regions once at startup (not every loop)
     regions = load_yaml(REGIONS_CFG_PATH)
 
+    # Tracks consecutive "process running but window absent" cycles to prevent infinite loop
+    _panel_no_window_iters = 0
+
     while True:
         # Check window
         if hwnd is None or not win32gui.IsWindow(hwnd):
@@ -849,10 +864,17 @@ def run_watchdog() -> None:
                 # don't spawn a second instance — wait and search again.
                 panel_dir_check = regions.get("panel", {}).get("dir", "")
                 if panel_dir_check and is_panel_running(panel_dir_check):
-                    print("⚠️  Panel process is already running but window not found. Waiting...")
-                    log.warning("Panel already running (no window). Waiting 5s before retry.")
-                    time.sleep(5)
-                    continue
+                    _panel_no_window_iters += 1
+                    if _panel_no_window_iters <= 12:
+                        print(f"⚠️  Panel running but window not found. Waiting 5s... ({_panel_no_window_iters}/12)")
+                        log.warning("Panel running (no window). Waiting 5s. (%d/12)", _panel_no_window_iters)
+                        time.sleep(5)
+                        continue
+                    else:
+                        print(f"⚠️  Panel running without window for ~{_panel_no_window_iters * 5}s — forcing new launch")
+                        log.warning("Forcing new panel launch after %d no-window retries", _panel_no_window_iters)
+                        _panel_no_window_iters = 0
+                        # Fall through to launch
 
                 print("Launching panel.exe...")
                 log.warning("Launching panel.exe")
@@ -936,12 +958,14 @@ def run_watchdog() -> None:
                     time.sleep(5)
                     continue
                 
+                _panel_no_window_iters = 0
                 print(f"\n✅ Window found after launch: {last_found_title} (hwnd={hwnd})")
                 log.info("Window found after launch: hwnd=%s title=%r", hwnd, last_found_title)
 
                 print("\n🔧 Running first-run setup if needed...")
                 
                 # ANTI-SPAM: Check if we've already run first-run on this panel instance
+                _first_run_failed = False
                 try:
                     _, pid = win32process.GetWindowThreadProcessId(hwnd)
                     
@@ -982,12 +1006,20 @@ def run_watchdog() -> None:
                                 else:
                                     print(f"❌ All {max_attempts} attempts failed!")
                                     log.error("All attempts failed for PID %d", pid)
-                        
+                                    _first_run_failed = True
+
                 except Exception as e:
                     log.warning("Could not get PID for first-run tracking: %s", e)
                     # Fall back to running it anyway
                     run_panel_first_run_if_needed(hwnd, regions, log=log, force=True)
-                
+
+                if _first_run_failed:
+                    print("⚠️  First-run failed all attempts — resetting to retry next loop.")
+                    log.warning("First-run failed all attempts; invalidating hwnd to force re-check")
+                    hwnd = None
+                    time.sleep(5)
+                    continue
+
                 # Normalize window position AFTER first-run (always runs)
                 print("\n📐 Normalizing panel window position...")
                 x, y, moved = normalize_window_bottom_right(
@@ -1006,6 +1038,7 @@ def run_watchdog() -> None:
                 time.sleep(settle_norm_ms / 1000)
 
             else:
+                _panel_no_window_iters = 0
                 print(f"✅ Window found: {last_found_title} (hwnd={hwnd})\n")
                 log.info("Found window: hwnd=%s title=%r", hwnd, last_found_title)
 
@@ -1154,10 +1187,12 @@ def run_watchdog() -> None:
                 log.warning("Cooldown active. Reason: %s", trigger_reason)
             else:
                 # Disable normalization for next loop to prevent jumping during recovery
-                normalize_every = False 
-                
-                trigger_recovery_action(hwnd, log, app, trigger_reason)
-                last_action_ts = now_ts
+                normalize_every = False
+
+                if trigger_recovery_action(hwnd, log, app, trigger_reason):
+                    last_action_ts = now_ts
+                else:
+                    log.warning("Recovery action failed; cooldown not applied")
         else:
             # Re-enable normalization if we are healthy (and config says so)
             normalize_every = bool(app["watchdog"].get("normalize_every_loop", True))
@@ -1183,9 +1218,10 @@ def run_watchdog() -> None:
                 print("🎮 CS2 INSTANCE CHECK")
                 print("=" * 70)
                 
-                check_cs2_instance_count(hwnd, regions, expected=4, log=log)
-                
-                cs2_check_done = True
+                try:
+                    check_cs2_instance_count(hwnd, regions, expected=4, log=log)
+                finally:
+                    cs2_check_done = True
                 print("=" * 70 + "\n")
         
         time.sleep(poll)

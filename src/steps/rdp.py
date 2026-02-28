@@ -63,18 +63,32 @@ def setup_logging():
     )
     return logging.getLogger(__name__)
 
-def close_confirmation_dialog(verbose=True):
+def close_confirmation_dialog(hwnd=None, verbose=True):
     """
     Close confirmation dialog by pressing Enter.
+    If hwnd is supplied, skips the press when focus has moved to an unrelated
+    window — prevents accidentally hitting UI elements in other apps.
     """
+    if hwnd is not None:
+        fg = win32gui.GetForegroundWindow()
+        if fg != hwnd:
+            fg_title = win32gui.GetWindowText(fg) if fg else ""
+            # Allow child dialogs (their title won't match TITLE_SUB, but they
+            # belong to the same process).  Only skip if an entirely different
+            # top-level app has grabbed focus.
+            if TITLE_SUB.lower() not in fg_title.lower():
+                if verbose:
+                    print(f"   ⚠️  Focus on unrelated window '{fg_title}' — skipping Enter press")
+                return
+
     if verbose:
         print("   🔘 Pressing Enter to close dialog...")
-    
+
     import pyautogui
     pyautogui.press('enter')
     time.sleep(0.2)
     pyautogui.press('enter')  # Press twice to be sure
-    
+
     if verbose:
         print("   ✅ Sent Enter keypress")
 
@@ -423,12 +437,12 @@ def run(config=None, context=None):
     safe_double_click(x1, y1)
     log.info("User1 double-clicked")
     print("✅ User1 double-clicked")
-    
+
     # 4a) Close confirmation dialog
     log.info(f"Waiting {dialog_wait_s}s for User1 confirmation dialog")
     print(f"\n⏳ Waiting {dialog_wait_s}s for confirmation dialog...")
     time.sleep(dialog_wait_s)
-    close_confirmation_dialog(verbose=True)
+    close_confirmation_dialog(hwnd=m.hwnd, verbose=True)
     time.sleep(0.5)
 
     # 5) Refocus RDPClient for second click
@@ -455,12 +469,12 @@ def run(config=None, context=None):
     safe_double_click(x2, y2)
     log.info("User2 double-clicked")
     print("✅ User2 double-clicked")
-    
+
     # 6a) Close confirmation dialog
     log.info(f"Waiting {dialog_wait_s}s for User2 confirmation dialog")
     print(f"\n⏳ Waiting {dialog_wait_s}s for confirmation dialog...")
     time.sleep(dialog_wait_s)
-    close_confirmation_dialog(verbose=True)
+    close_confirmation_dialog(hwnd=m.hwnd, verbose=True)
     time.sleep(0.5)
 
     log.info("RDPCLIENT AUTOMATION COMPLETE - Both RDP sessions opening")
