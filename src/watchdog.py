@@ -247,38 +247,33 @@ def run_panel_first_run_if_needed(hwnd: int, regions: dict, log=None, force: boo
     print(f"⏳ Waiting {initial_wait}s for first-run UI...")
     time.sleep(initial_wait)
 
-    # CRITICAL FIX: Force focus with verification
-    print("🎯 Focusing window...")
+    # Best-effort focus — pyautogui clicks are mouse-coord based and work
+    # without focus, so we warn but never abort if SetForegroundWindow is
+    # blocked (common when launched from a PyInstaller exe).
+    print("🎯 Focusing window (best-effort)...")
+    focused = False
     for attempt in range(3):
         try:
             win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+            win32gui.BringWindowToTop(hwnd)
             win32gui.SetForegroundWindow(hwnd)
-            time.sleep(0.5)
-
-            # VERIFY focus was gained
-            fg = win32gui.GetForegroundWindow()
-            if fg == hwnd:
-                print("   ✅ Focused")
+            time.sleep(0.3)
+            if win32gui.GetForegroundWindow() == hwnd:
+                focused = True
                 break
-            else:
-                print(f"   ⚠️  Focus {attempt+1}/3 failed, retrying...")
-                if attempt < 2:
-                    win32gui.BringWindowToTop(hwnd)
-                    time.sleep(0.3)
         except Exception as e:
             if log:
-                log.warning("Focus attempt %d failed: %s", attempt+1, e)
-            if attempt < 2:
-                time.sleep(0.3)
-    
-    # Final verification
-    if win32gui.GetForegroundWindow() != hwnd:
-        print("❌ Focus failed after 3 attempts")
+                log.warning("Focus attempt %d failed: %s", attempt + 1, e)
+        time.sleep(0.3)
+
+    if focused:
+        print("   ✅ Focused")
+    else:
         if log:
-            log.error("Could not focus panel window for first-run clicks")
-        return False  # Failed
-    
-    time.sleep(0.5)  # Extra settle time
+            log.warning("Could not focus panel window; proceeding with clicks anyway")
+        print("   ⚠️  Focus blocked — clicks will still be sent to window coords")
+
+    time.sleep(0.5)  # settle time
 
     # OPTIONAL (recommended): detect first-run screen by OCR
     detect = fr.get("detect_region")
@@ -318,31 +313,24 @@ def run_panel_first_run_if_needed(hwnd: int, regions: dict, log=None, force: boo
     cx, cy = client_origin_screen(hwnd)
 
     for i, step in enumerate(clicks, 1):
-        # CRITICAL FIX: Re-focus if lost, don't abort
+        # Best-effort re-focus — don't abort if it fails
         fg = win32gui.GetForegroundWindow()
         if fg != hwnd:
-            print(f"   ⚠️  Focus lost before click {i}, re-focusing...")
             if log:
-                log.warning("Panel lost focus before click %d, re-focusing", i)
-
-            # Try to regain focus
+                log.warning("Panel lost focus before click %d; attempting re-focus", i)
             try:
                 win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                win32gui.BringWindowToTop(hwnd)
                 win32gui.SetForegroundWindow(hwnd)
-                time.sleep(0.5)
-
-                # Verify we got it back
-                if win32gui.GetForegroundWindow() != hwnd:
-                    print(f"   ❌ Could not regain focus, aborting")
-                    if log:
-                        log.error("Could not regain focus, aborting first-run clicks")
-                    return False  # Failed
-
-                print(f"   ✅ Focus regained")
+                time.sleep(0.3)
+                if win32gui.GetForegroundWindow() == hwnd:
+                    print(f"   ✅ Focus regained before click {i}")
+                else:
+                    print(f"   ⚠️  Still no focus before click {i}; continuing anyway")
             except Exception as e:
                 if log:
-                    log.error("Exception regaining focus: %s", e)
-                return False  # Failed
+                    log.warning("Re-focus before click %d failed: %s", i, e)
+                print(f"   ⚠️  Re-focus blocked before click {i}; continuing anyway")
     
         x_pct = float(step.get("x_pct", step.get("x")))
         y_pct = float(step.get("y_pct", step.get("y")))

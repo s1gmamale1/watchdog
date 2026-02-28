@@ -18,6 +18,7 @@ import ctypes.wintypes
 import win32gui
 import win32con
 import win32api
+import win32process
 import logging
 from datetime import datetime
 
@@ -66,20 +67,29 @@ def setup_logging():
 def close_confirmation_dialog(hwnd=None, verbose=True):
     """
     Close confirmation dialog by pressing Enter.
-    If hwnd is supplied, skips the press when focus has moved to an unrelated
-    window — prevents accidentally hitting UI elements in other apps.
+    If hwnd is supplied, skips the press only when an entirely different app
+    has grabbed focus.  Dialogs spawned by RDPClient (same process) are
+    allowed through even if their title differs from TITLE_SUB.
     """
     if hwnd is not None:
         fg = win32gui.GetForegroundWindow()
         if fg != hwnd:
             fg_title = win32gui.GetWindowText(fg) if fg else ""
-            # Allow child dialogs (their title won't match TITLE_SUB, but they
-            # belong to the same process).  Only skip if an entirely different
-            # top-level app has grabbed focus.
-            if TITLE_SUB.lower() not in fg_title.lower():
+            # Check if foreground window belongs to the same process as hwnd
+            same_process = False
+            try:
+                _, hwnd_pid = win32process.GetWindowThreadProcessId(hwnd)
+                _, fg_pid = win32process.GetWindowThreadProcessId(fg)
+                same_process = (hwnd_pid == fg_pid)
+            except Exception:
+                pass
+            # Skip only if truly unrelated (different process AND different title)
+            if not same_process and TITLE_SUB.lower() not in fg_title.lower():
                 if verbose:
                     print(f"   ⚠️  Focus on unrelated window '{fg_title}' — skipping Enter press")
                 return
+            if verbose and same_process and fg != hwnd:
+                print(f"   ℹ️  Dialog detected (same process): '{fg_title}'")
 
     if verbose:
         print("   🔘 Pressing Enter to close dialog...")
