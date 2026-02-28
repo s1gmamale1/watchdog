@@ -17,7 +17,7 @@ import psutil
 import win32console
 import win32process
 import win32ui
-from ctypes import windll
+from ctypes import windll, byref, wintypes
 
 from ocr import ocr_log_text
 from utils import load_yaml, setup_logger
@@ -659,10 +659,6 @@ def find_window_by_process_path(dir_substring: str) -> Tuple[Optional[int], Opti
 
 def restart_explorer(log=None):
     """Restart Windows Explorer when 'Cannot add' is detected"""
-    import subprocess
-    import psutil
-    import win32console
-    
     print("🔄 Restarting Explorer...")
     if log:
         log.warning("Restarting explorer.exe - 'Cannot add' detected")
@@ -760,26 +756,24 @@ def check_cs2_instance_count(hwnd, regions, expected=4, log=None):
 
 
 def reposition_console_window():
-    """Reposition console to bottom-left corner"""
+    """Reposition console to bottom-left corner, above the taskbar"""
     try:
-        import ctypes
-        import win32console
-        
         console_hwnd = win32console.GetConsoleWindow()
         if not console_hwnd:
             return
-        
-        screen_width = ctypes.windll.user32.GetSystemMetrics(0)
-        screen_height = ctypes.windll.user32.GetSystemMetrics(1)
-        
+
+        # Use work area so the console sits above the taskbar
+        work_area = wintypes.RECT()
+        windll.user32.SystemParametersInfoW(0x30, 0, byref(work_area), 0)
+
         console_width = 800
         console_height = 400
-        
-        x = 0
-        y = screen_height - console_height
-        
+
+        x = work_area.left
+        y = work_area.bottom - console_height
+
         print(f"📐 Repositioning console to bottom-left ({x}, {y})...")
-        
+
         win32gui.SetWindowPos(
             console_hwnd,
             win32con.HWND_TOP,
@@ -787,9 +781,9 @@ def reposition_console_window():
             console_width, console_height,
             win32con.SWP_SHOWWINDOW
         )
-        
+
         print("✅ Console repositioned\n")
-        
+
     except Exception as e:
         print(f"⚠️  Console reposition failed: {e}\n")
 
@@ -813,9 +807,7 @@ def run_watchdog() -> None:
     debounce = int(app["watchdog"].get("action_debounce_seconds", 180))
 
     debug_print_ocr = bool(app["watchdog"].get("debug_print_ocr", False))
-    save_last_log_image = bool(app["watchdog"].get("save_last_log_image", True))
     settle_norm_ms = int(app["watchdog"].get("settle_after_normalize_ms", 150))
-    settle_focus_ms = int(app["watchdog"].get("settle_after_focus_ms", 200))
 
     # Initialize normalize flag based on config
     normalize_every = bool(app["watchdog"].get("normalize_every_loop", True))
@@ -842,11 +834,8 @@ def run_watchdog() -> None:
 
     # OPTIMIZATION: Load regions once at startup (not every loop)
     regions = load_yaml(REGIONS_CFG_PATH)
-    loop_count = 0
-    
+
     while True:
-        loop_count += 1
-        
         # Check window
         if hwnd is None or not win32gui.IsWindow(hwnd):
             print("🔍 Searching for target window...")
@@ -973,12 +962,12 @@ def run_watchdog() -> None:
                             if success:
                                 first_run_completed_pids.append(pid)
                                 
-                                # Set CS2 check for 5 min from now
-                                if cs2_check_timestamp is None:
-                                    cs2_check_timestamp = time.time() + (5 * 60)
-                                    print(f"⏰ CS2 check in 5 min")
-                                    if log:
-                                        log.info("CS2 check scheduled for 5 min")
+                                # Schedule CS2 check 5 min from now (reset on each relaunch)
+                                cs2_check_timestamp = time.time() + (5 * 60)
+                                cs2_check_done = False
+                                print(f"⏰ CS2 check in 5 min")
+                                if log:
+                                    log.info("CS2 check scheduled for 5 min")
                                 
                                 print(f"✅ Completed (attempt {attempt})")
                                 log.info("First-run completed for PID %d", pid)
@@ -1116,7 +1105,7 @@ def run_watchdog() -> None:
                 if debug_print_ocr:
                     print(f"📄 OCR(fallback): {text2[:100]}...")
         
-                minutes_ago, hh, mm, latest_line, latest_msg = find_latest_entry(text2, debug=True)  # Always debug
+                minutes_ago, hh, mm, latest_line, latest_msg = find_latest_entry(text2, debug=True)
         
             except Exception as e:
                 log.warning("Fallback capture/OCR failed: %s", e)

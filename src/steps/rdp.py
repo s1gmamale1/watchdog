@@ -13,6 +13,8 @@ import sys
 from pathlib import Path
 import time
 import subprocess
+import ctypes
+import ctypes.wintypes
 import win32gui
 import win32con
 import win32api
@@ -136,19 +138,19 @@ def position_window_to_corner(hwnd, corner, window_size=(640, 480)):
         True if successful, False otherwise
     """
     try:
-        # Get screen dimensions
-        screen_width = win32api.GetSystemMetrics(0)
-        screen_height = win32api.GetSystemMetrics(1)
-        
+        # Get usable work area (excludes taskbar regardless of its position)
+        work_area = ctypes.wintypes.RECT()
+        ctypes.windll.user32.SystemParametersInfoW(0x30, 0, ctypes.byref(work_area), 0)
+
         width, height = window_size
-        
-        # Calculate position based on corner
+
+        # Calculate position based on corner, clamped to the work area
         if corner == "top-left":
-            x = 0
-            y = 0
+            x = work_area.left
+            y = work_area.top
         elif corner == "bottom-right":
-            x = screen_width - width
-            y = screen_height - height
+            x = work_area.right - width
+            y = work_area.bottom - height
         else:
             print(f"   ⚠️  Unknown corner: {corner}")
             return False
